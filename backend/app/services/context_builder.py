@@ -8,6 +8,18 @@ from .tool_exec import ToolContext
 DEFAULT_CONTEXT_THRESHOLD = 8000
 PER_ATTACHMENT_LIMIT = 3000
 
+DEMO_TABLE_GUIDE = (
+    "可用演示数据表（db_query 只读查询，均支持标准 SQL）：\n"
+    "- biz_user(user_id, user_name, register_date, reg_channel, device_pref)\n"
+    "- biz_visit_event(visit_id, user_id, visit_date, visit_channel, device, add_cart_flag, ordered_flag)\n"
+    "- biz_add_cart_event(cart_id, user_id, cart_date, visit_channel, device)\n"
+    "- biz_order_event(order_id, user_id, order_date, amount, visit_channel, device)\n"
+    "- biz_product(product_id, product_name, category, batch_no, launch_date)\n"
+    "- biz_rating(rating_id, product_id, user_id, rating, created_at)\n"
+    "- biz_comment(comment_id, product_id, user_id, comment_text, created_at)\n"
+    "- biz_refund(refund_id, product_id, user_id, refund_date, refund_reason, amount)\n"
+)
+
 
 async def _get_threshold() -> int:
     from .config_service import get_sync_int
@@ -99,7 +111,7 @@ async def build_context(conversation_id: int, llm) -> tuple[list[dict], ToolCont
         "problem_definition(问题定义), key_metrics(数组,每项含 metric_name/metric_value/metric_unit/metric_period), "
         "evidence_list(数组,每项含 source_type/source_name/evidence_text/related_metric/confidence), "
         "conclusion_text(归因结论), missing_data_text(待补充数据), next_action_text(下一步建议,至少2条)。\n"
-        "JSON 之外用简洁的 markdown 说明归因过程。当前会话: " + conv.title + "。"
+        "JSON 之外用简洁的 markdown 说明归因过程。当前会话: " + conv.title + "。\n\n" + DEMO_TABLE_GUIDE
     )
     if att_blocks:
         system += "\n\n可用附件解析文本:\n" + "\n".join(att_blocks)

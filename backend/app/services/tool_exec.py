@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 
 from ..core.errors import BizError
 from ..tools import _paths
@@ -134,11 +135,28 @@ def _ws_file(ctx: ToolContext, rel: str) -> Path:
     return _paths.ensure_under(ctx.workspace_dir, ctx.workspace_dir / rel)
 
 
-async def _tool_db_query(ctx: ToolContext, args: dict) -> tuple[str, str]:
+_query_engines = {}  # dsn -> AsyncEngine（readonly_dsn 数据源缓存）
+
+
+async def _query_engine():
+    """db_query 的数据源：tool.db_query.readonly_dsn 非空则用独立连接，否则应用库。"""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
     from ..db.session import engine
 
+    dsn = (await _get_config("tool.db_query.readonly_dsn", "")).strip()
+    if not dsn:
+        return engine
+    if dsn not in _query_engines:
+        kwargs = {"poolclass": NullPool} if dsn.startswith("sqlite") else {}
+        _query_engines[dsn] = create_async_engine(dsn, **kwargs)
+    return _query_engines[dsn]
+
+
+async def _tool_db_query(ctx: ToolContext, args: dict) -> tuple[str, str]:
+    eng = await _query_engine()
     sql = _validate_select(str(args.get("sql", "")))
-    async with engine.connect() as conn:
+    async with eng.connect() as conn:
         result = await conn.execute(text(sql))
         rows = [dict(r._mapping) for r in result.fetchmany(100)]
     for row in rows:
