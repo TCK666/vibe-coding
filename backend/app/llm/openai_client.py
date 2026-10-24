@@ -49,6 +49,7 @@ class OpenAICompatClient:
                     for tc in delta.get("tool_calls") or []:
                         fn = tc.get("function") or {}
                         yield ToolCall(
+                            index=int(tc.get("index") or 0),
                             call_id=tc.get("id") or "",
                             name=fn.get("name") or "",
                             arguments=fn.get("arguments") or "",

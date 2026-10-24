@@ -3,7 +3,7 @@
     <el-header class="wb-header" height="56px">
       <span class="wb-title">经营归因分析系统</span>
       <div class="wb-header-right">
-        <el-button size="small" :disabled="!currentId" @click="attachVisible = true">
+        <el-button size="small" :disabled="!conv.currentId" @click="attachVisible = true">
           附件（{{ attachments.length }}）
         </el-button>
         <span class="wb-user">{{ userDisplay }}</span>
@@ -41,18 +41,27 @@
         <div class="chat-panel">
           <div v-if="conv.current" class="chat-title">{{ conv.current.title }}</div>
           <div class="msg-list">
-            <template v-if="conv.messages.length">
-              <div
-                v-for="m in conv.messages"
-                :key="m.message_id"
-                class="msg-row"
-                :class="m.role"
-              >
+            <template v-for="m in conv.messages" :key="m.message_id">
+              <div v-if="m.message_type === 'tool_event'" class="tool-line">
+                🔧 {{ m.tool_name }}：{{ m.content }}
+              </div>
+              <div v-else class="msg-row" :class="m.role">
                 <div class="bubble">{{ m.content }}</div>
               </div>
             </template>
-            <div v-else class="empty-hint">
-              {{ conv.currentId ? '还没有消息，发送你的第一个分析问题吧' : '从左侧选择或新建会话' }}
+
+            <!-- 本轮流式输出 -->
+            <template v-if="chat.taskState">
+              <div v-for="(t, i) in chat.toolEvents" :key="'t' + i" class="tool-line">
+                🔧 {{ t.name }}{{ t.status === 'running' ? '（执行中…）' : '：' + t.summary }}
+              </div>
+              <div v-if="chat.streamingText" class="msg-row assistant">
+                <div class="bubble streaming">{{ chat.streamingText }}<span class="cursor">▍</span></div>
+              </div>
+            </template>
+
+            <div v-if="!conv.messages.length && !chat.taskState" class="empty-hint">
+              {{ conv.currentId ? '发送你的第一个分析问题吧' : '从左侧选择或新建会话' }}
             </div>
           </div>
           <div class="chat-input">
@@ -60,10 +69,24 @@
               v-model="draft"
               type="textarea"
               :rows="2"
-              placeholder="请输入分析问题（分析引擎将在里程碑5接入）"
-              disabled
+              :disabled="!conv.currentId || !chat.connected"
+              :placeholder="
+                conv.currentId
+                  ? chat.connected
+                    ? '输入分析问题，Ctrl+Enter 发送'
+                    : '实时通道连接中…'
+                  : '先选择或新建会话'
+              "
+              @keydown.ctrl.enter.prevent="handleSend"
             />
-            <el-button type="primary" class="send-btn" disabled>发送</el-button>
+            <el-button
+              type="primary"
+              class="send-btn"
+              :disabled="!conv.currentId || !chat.connected || chat.taskState"
+              @click="handleSend"
+            >
+              发送
+            </el-button>
           </div>
         </div>
       </el-main>
@@ -72,11 +95,35 @@
       <el-aside width="360px" class="wb-aside-right">
         <div class="panel">
           <h3 class="panel-title">实时任务</h3>
-          <div class="placeholder-block">暂无运行中的任务</div>
+          <template v-if="chat.taskState">
+            <div class="task-row">
+              <el-tag size="small" :type="statusTagType(chat.taskState.status)">
+                {{ chat.taskState.status }}
+              </el-tag>
+              <span class="task-step">{{ chat.taskState.currentStep || '…' }}</span>
+            </div>
+            <div class="task-tools">
+              <div v-for="(t, i) in chat.toolEvents" :key="i" class="task-tool">
+                <span :class="['tool-dot', t.status]"></span>
+                {{ t.name }} {{ t.status === 'running' ? '执行中…' : '完成' }}
+                <div v-if="t.summary" class="tool-summary">{{ t.summary }}</div>
+              </div>
+            </div>
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              class="cancel-btn"
+              @click="handleCancel"
+            >
+              取消分析
+            </el-button>
+          </template>
+          <div v-else class="placeholder-block small">暂无运行中的任务</div>
         </div>
         <div class="panel">
           <h3 class="panel-title">结果展示</h3>
-          <div class="placeholder-block">暂无分析结果</div>
+          <div class="placeholder-block small">暂无分析结果</div>
         </div>
       </el-aside>
     </el-container>
@@ -127,13 +174,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Edit } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
 import { getMe as fetchMe } from '../api/auth'
 import { useConversationStore } from '../stores/conversation'
+import { useChatStore } from '../stores/chat'
 import {
   deleteAttachment,
   downloadAttachment,
@@ -144,6 +192,7 @@ import {
 const router = useRouter()
 const auth = useAuthStore()
 const conv = useConversationStore()
+const chat = useChatStore()
 
 const draft = ref('')
 const userDisplay = ref('当前用户')
@@ -161,6 +210,7 @@ function authErr(e) {
 }
 
 onMounted(async () => {
+  chat.setDoneHandler(onRoundDone)
   try {
     const me = await fetchMe()
     auth.user = me
@@ -175,11 +225,43 @@ onMounted(async () => {
   }
 })
 
+// 切换会话 → 重连实时通道
+watch(
+  () => conv.currentId,
+  (id) => {
+    if (id) {
+      chat.connect(id)
+      refreshAttachments()
+    } else {
+      chat.disconnect()
+      attachments.value = []
+    }
+  }
+)
+
+// 一轮结束：刷新历史（含工具事件与结果消息）
+async function onRoundDone(finished) {
+  if (finished.error) ElMessage.error(finished.error)
+  try {
+    if (conv.currentId) await conv.select(conv.currentId)
+  } catch (e) {
+    authErr(e)
+  }
+}
+
+async function refreshAttachments() {
+  if (!conv.currentId) return
+  try {
+    const data = await listAttachments(conv.currentId)
+    attachments.value = data.attachments
+  } catch (e) {
+    /* 静默 */
+  }
+}
+
 async function handleSelect(id) {
   try {
     await conv.select(id)
-    const data = await listAttachments(id)
-    attachments.value = data.attachments
   } catch (e) {
     authErr(e)
   }
@@ -229,10 +311,18 @@ async function handleDelete(c) {
   }
 }
 
-async function refreshAttachments() {
-  if (!conv.currentId) return
-  const data = await listAttachments(conv.currentId)
-  attachments.value = data.attachments
+function handleSend() {
+  const content = draft.value.trim()
+  if (!content) return
+  if (chat.taskState) return ElMessage.warning('当前会话已有分析任务在运行')
+  if (!chat.send(content)) return ElMessage.error('实时通道未连接，请稍候')
+  // 乐观插入用户消息；一轮结束后由 onRoundDone 用服务端历史覆盖
+  conv.messages.push({ message_id: `tmp-${Date.now()}`, role: 'user', message_type: 'text', content })
+  draft.value = ''
+}
+
+function handleCancel() {
+  if (chat.taskState?.taskId) chat.cancel(chat.taskState.taskId)
 }
 
 async function handleUpload(ev) {
@@ -278,7 +368,15 @@ async function handleDownload(att) {
 function handleLogout() {
   auth.logout()
   conv.clear()
+  chat.disconnect()
   router.push('/login')
+}
+
+function statusTagType(status) {
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'cancelled') return 'info'
+  return 'warning'
 }
 
 function fmtSize(n) {
@@ -463,6 +561,28 @@ function fmtDay(t) {
   color: #303133;
 }
 
+.streaming {
+  min-height: 20px;
+}
+
+.cursor {
+  animation: blink 1s steps(2) infinite;
+  color: #409eff;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.tool-line {
+  text-align: center;
+  color: #909399;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
 .chat-input {
   margin-top: 12px;
   display: flex;
@@ -495,11 +615,11 @@ function fmtDay(t) {
   flex: 1.2;
 }
 
-.placeholder-block,
-.empty-hint {
+.placeholder-block.small,
+.placeholder-block {
   border: 1px dashed #dcdfe6;
   border-radius: 4px;
-  min-height: 100px;
+  min-height: 80px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -507,9 +627,66 @@ function fmtDay(t) {
   font-size: 14px;
 }
 
+.placeholder-block.small {
+  min-height: 80px;
+}
+
 .empty-hint {
   border: none;
   min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #c0c4cc;
+  font-size: 14px;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.task-step {
+  font-size: 13px;
+  color: #606266;
+}
+
+.task-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.task-tool {
+  font-size: 13px;
+  color: #303133;
+}
+
+.tool-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: #e6a23c;
+}
+
+.tool-dot.done {
+  background: #67c23a;
+}
+
+.tool-summary {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 14px;
+  word-break: break-all;
+}
+
+.cancel-btn {
+  width: 100%;
 }
 
 .attach-upload {

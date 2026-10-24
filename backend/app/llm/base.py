@@ -14,7 +14,8 @@ class DeltaText:
 
 @dataclass
 class ToolCall:
-    """工具调用请求（arguments 为 JSON 分片，由调用方按 call_id 累积）。"""
+    """工具调用请求（arguments 为 JSON 分片，按 index 累积；id/name 取首个非空值）。"""
+    index: int
     call_id: str
     name: str
     arguments: str
