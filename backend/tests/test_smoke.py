@@ -11,15 +11,20 @@ from mock_llm.main import app as llm_app
 REDIRECT_URI = "http://localhost:8000/auth/callback"
 
 
-def test_backend_healthz_and_stub_api():
+def test_backend_healthz_and_auth_guard():
     with TestClient(app) as client:
         resp = client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
+        # 里程碑4起会话接口已实现：无令牌一律 401
         resp = client.post("/api/chat/create", json={"title": "冒烟测试"})
+        assert resp.status_code == 401
+        assert resp.json()["code"] == "AUTH_TOKEN_MISSING"
+
+        # 尚未实现的接口仍返回 501 占位
+        resp = client.post("/api/admin/reload")
         assert resp.status_code == 501
-        assert resp.json()["code"] == "NOT_IMPLEMENTED"
 
 
 def test_mock_auth_full_oauth2_flow():

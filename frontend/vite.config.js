@@ -12,7 +12,8 @@ export default defineConfig({
         changeOrigin: true,
         ws: true
       },
-      '/auth': {
+      // 只代理后端登录入口；/auth/callback 是前端 SPA 路由，不能被代理吃掉
+      '/auth/login': {
         target: 'http://localhost:8000',
         changeOrigin: true
       }

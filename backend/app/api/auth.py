@@ -12,12 +12,26 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import get_settings
-from ..core.errors import BizError
+from ..core.deps import get_current_user
+from ..core.errors import BizError, ok
 from ..core.security import create_access_token
 from ..db.session import get_db
 from ..services.user_service import upsert_from_userinfo
 
 router = APIRouter(tags=["auth"])
+
+
+@router.get("/api/auth/me", summary="当前登录用户")
+async def me(user=Depends(get_current_user)):
+    return ok(
+        {
+            "user_id": user.id,
+            "external_user_id": user.external_user_id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "role": user.role,
+        }
+    )
 
 # OAuth state 防CSRF：内存态，5 分钟有效
 _states: dict[str, float] = {}
