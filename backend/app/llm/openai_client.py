@@ -71,5 +71,12 @@ class OpenAICompatClient:
 
 
 def get_llm_client() -> OpenAICompatClient:
-    """mock 与 openai 供应商都走 OpenAI 兼容协议，差别仅在与配置。"""
-    return OpenAICompatClient()
+    """供应商切换只动 system_configs（llm.*），重载后下一轮任务即生效。"""
+    from ..services.config_service import get_sync
+
+    s = get_settings()
+    return OpenAICompatClient(
+        base_url=get_sync("llm.base_url", s.llm_base_url),
+        api_key=get_sync("llm.api_key", s.llm_api_key),
+        model=get_sync("llm.model", s.llm_model),
+    )

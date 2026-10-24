@@ -2,7 +2,7 @@
 from sqlalchemy import select
 
 from ..db.session import SessionLocal
-from ..models import Attachment, ContextSummary, Conversation, Message, SystemConfig
+from ..models import Attachment, ContextSummary, Conversation, Message
 from .tool_exec import ToolContext
 
 DEFAULT_CONTEXT_THRESHOLD = 8000
@@ -10,18 +10,9 @@ PER_ATTACHMENT_LIMIT = 3000
 
 
 async def _get_threshold() -> int:
-    try:
-        async with SessionLocal() as db:
-            row = (
-                await db.execute(
-                    select(SystemConfig.config_value).where(
-                        SystemConfig.config_key == "analysis.context_threshold"
-                    )
-                )
-            ).scalar()
-        return int(row) if row else DEFAULT_CONTEXT_THRESHOLD
-    except Exception:
-        return DEFAULT_CONTEXT_THRESHOLD
+    from .config_service import get_sync_int
+
+    return get_sync_int("analysis.context_threshold", DEFAULT_CONTEXT_THRESHOLD)
 
 
 def _render_message(m: Message) -> str:

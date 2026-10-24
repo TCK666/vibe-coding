@@ -132,6 +132,16 @@ async def login(
     return resp
 
 
+@app.get("/oauth/logout")
+async def logout(request: Request):
+    """清除认证中心会话（切换账号用）。"""
+    sid = request.cookies.get("ma_session", "")
+    _sessions.pop(sid, None)
+    resp = RedirectResponse("/", status_code=302)
+    resp.delete_cookie("ma_session")
+    return resp
+
+
 @app.post("/oauth/token")
 async def token(request: Request):
     form = await request.form()

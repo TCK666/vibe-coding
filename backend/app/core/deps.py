@@ -25,3 +25,9 @@ async def get_current_user(
     if user is None or user.status != "active":
         raise BizError("AUTH_USER_INVALID", "用户不存在或已禁用", 401)
     return user
+
+
+async def get_current_admin_user(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin":
+        raise BizError("AUTH_FORBIDDEN", "需要系统管理员权限", 403)
+    return user

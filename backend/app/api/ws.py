@@ -16,7 +16,11 @@ from ..services.ws_manager import ws_manager
 
 router = APIRouter(prefix="/api/chat", tags=["ws"])
 
-WS_TOKEN_TTL_SECONDS = 30
+
+def _token_ttl() -> int:
+    from ..services.config_service import get_sync_int
+
+    return get_sync_int("ws.token_ttl_seconds", 30)
 
 
 class WsTokenReq(BaseModel):
@@ -40,14 +44,14 @@ async def create_ws_token(
         raise BizError("CONV_NOT_FOUND", "会话不存在", 404)
 
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.now() + timedelta(seconds=WS_TOKEN_TTL_SECONDS)
+    expires_at = datetime.now() + timedelta(seconds=_token_ttl())
     db.add(
         WebsocketToken(
             user_id=user.id, conversation_id=conv.id, token=token, expires_at=expires_at
         )
     )
     await db.commit()
-    return ok({"websocket_token": token, "expires_in": WS_TOKEN_TTL_SECONDS})
+    return ok({"websocket_token": token, "expires_in": _token_ttl()})
 
 
 async def _consume_ws_token(

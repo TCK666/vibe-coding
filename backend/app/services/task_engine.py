@@ -17,6 +17,7 @@ from ..llm import DeltaText, Finish, ToolCall, get_llm_client
 from ..models import AnalysisResult, AnalysisTask, Message, TaskLog
 from ..schemas.result import render_markdown, validate_six_part
 from . import message_service, result_service, tool_exec
+from .config_service import get_sync_int
 from .context_builder import build_context
 from .ws_manager import ws_manager
 
@@ -259,8 +260,9 @@ async def run_task(task_id: int, conversation_id: int, user_id: int, content: st
         _check_cancel(task_id)
         messages, tool_ctx = await _build_context(conversation_id, _llm_factory())
         tools = tool_exec.TOOL_SCHEMAS
+        max_rounds = get_sync_int("analysis.max_tool_calls", MAX_TOOL_ROUNDS)
 
-        for round_no in range(MAX_TOOL_ROUNDS):
+        for round_no in range(max_rounds):
             _check_cancel(task_id)
             final_text, calls, finish_reason = await _stream_round(
                 conversation_id, task_id, messages, tools

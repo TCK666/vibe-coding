@@ -3,6 +3,10 @@
     <el-header class="wb-header" height="56px">
       <span class="wb-title">经营归因分析系统</span>
       <div class="wb-header-right">
+        <template v-if="auth.user && auth.user.role === 'admin'">
+          <el-button size="small" @click="router.push('/admin/config')">配置管理</el-button>
+          <el-button size="small" @click="router.push('/admin/logs')">运行日志</el-button>
+        </template>
         <el-button size="small" :disabled="!conv.currentId" @click="attachVisible = true">
           附件（{{ attachments.length }}）
         </el-button>

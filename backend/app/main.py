@@ -11,11 +11,14 @@ from .api import api_router
 from .core.config import get_settings
 from .core.errors import BizError, biz_error_handler, unhandled_error_handler
 from .db.session import init_db
+from .services import config_service
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await config_service.seed_defaults()
+    await config_service.reload_cache()
     yield
 
 

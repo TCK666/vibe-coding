@@ -12,8 +12,6 @@ from pathlib import Path
 from sqlalchemy import text
 
 from ..core.errors import BizError
-from ..db.session import SessionLocal
-from ..models import SystemConfig
 from ..tools import _paths
 
 MAX_FULL_OUTPUT = 4000
@@ -108,17 +106,9 @@ TOOL_SCHEMAS = [
 
 
 async def _get_config(key: str, default: str) -> str:
-    try:
-        async with SessionLocal() as db:
-            row = (
-                await db.execute(
-                    text("SELECT config_value FROM system_configs WHERE config_key = :k"),
-                    {"k": key},
-                )
-            ).scalar()
-        return row if row is not None else default
-    except Exception:
-        return default
+    from .config_service import get_sync
+
+    return get_sync(key, default)
 
 
 def _validate_select(sql: str) -> str:

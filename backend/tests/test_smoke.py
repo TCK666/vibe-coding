@@ -22,9 +22,9 @@ def test_backend_healthz_and_auth_guard():
         assert resp.status_code == 401
         assert resp.json()["code"] == "AUTH_TOKEN_MISSING"
 
-        # 尚未实现的接口仍返回 501 占位
+        # 管理接口同样需要令牌（里程碑7已实装）
         resp = client.post("/api/admin/reload")
-        assert resp.status_code == 501
+        assert resp.status_code == 401
 
 
 def test_mock_auth_full_oauth2_flow():
