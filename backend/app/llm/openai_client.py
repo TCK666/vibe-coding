@@ -20,6 +20,18 @@ class OpenAICompatClient:
         self.api_key = api_key or s.llm_api_key
         self.model = model or s.llm_model
 
+    async def chat(self, messages: list[dict]) -> str:
+        """非流式一次性对话（摘要压缩等内部用途）。"""
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{self.base_url}/v1/chat/completions",
+                json={"model": self.model, "messages": messages, "stream": False},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            resp.raise_for_status()
+            choice = (resp.json().get("choices") or [{}])[0]
+            return (choice.get("message") or {}).get("content") or ""
+
     async def stream_chat(
         self, messages: list[dict], tools: list[dict] | None = None
     ) -> AsyncIterator[DeltaText | ToolCall | Finish]:

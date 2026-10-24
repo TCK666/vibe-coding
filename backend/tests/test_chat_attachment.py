@@ -102,9 +102,9 @@ def test_attachment_upload_download_delete(client):
     assert r.status_code == 200
     assert r.content == content
 
-    # 附件列表 + 历史接口都会带出
+    # 附件列表 + 历史接口都会带出（里程碑6起 txt 上传即解析成功）
     r = client.get("/api/attachment/ls", params={"conversation_id": cid}, headers=_auth(ALICE_ID))
-    assert r.json()["data"]["attachments"][0]["parse_status"] == "pending"
+    assert r.json()["data"]["attachments"][0]["parse_status"] == "success"
     r = client.get(f"/api/chat/ls/{cid}", headers=_auth(ALICE_ID))
     assert len(r.json()["data"]["conversation_attachments"]) == 1
 

@@ -1,4 +1,4 @@
-"""附件服务：保存、下载路径解析、删除，含越界校验。"""
+"""附件服务：保存、解析、下载路径解析、删除，含越界校验。"""
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -12,6 +12,30 @@ from ..models import Attachment, Conversation
 from ..tools import _paths
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_PARSE_SIZE = 200 * 1024  # 解析文本上限 200KB
+TEXT_SUFFIXES = {"txt", "md", "csv", "json", "log", "py", "sql", "html", "htm", "tsv"}
+
+
+def parsed_text_path(user_id: int, conversation_id: int, attachment_id: int) -> Path:
+    d = _paths.WORKSPACE_ROOT / str(user_id) / str(conversation_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"parsed_{attachment_id}.txt"
+
+
+async def parse_and_store(att: Attachment, user_id: int) -> bool:
+    """上传后同步解析：文本类文件抽取文本写 workspace/parsed_{id}.txt，成功返回 True。"""
+    try:
+        abs_path = attachment_abs_path(att)
+        suffix = (att.file_type or "").lower().lstrip(".")
+        if suffix not in TEXT_SUFFIXES or not abs_path.is_file():
+            return False
+        raw = abs_path.read_bytes()[:MAX_PARSE_SIZE]
+        text = raw.decode("utf-8", errors="replace")
+        out = parsed_text_path(user_id, att.conversation_id, att.id)
+        out.write_text(text, encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 
 def safe_filename(name: str) -> str:

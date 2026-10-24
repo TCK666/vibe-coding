@@ -123,7 +123,54 @@
         </div>
         <div class="panel">
           <h3 class="panel-title">结果展示</h3>
-          <div class="placeholder-block small">暂无分析结果</div>
+          <template v-if="lastResult">
+            <div class="res-section">
+              <div class="res-label">问题定义</div>
+              <div class="res-text">{{ lastResult.problem_definition }}</div>
+            </div>
+            <div class="res-section" v-if="(lastResult.key_metrics || []).length">
+              <div class="res-label">关键指标</div>
+              <table class="res-table">
+                <tr><th>指标</th><th>数值</th><th>单位</th><th>周期</th></tr>
+                <tr v-for="(m, i) in lastResult.key_metrics" :key="i">
+                  <td>{{ m.metric_name }}</td><td>{{ m.metric_value }}</td>
+                  <td>{{ m.metric_unit }}</td><td>{{ m.metric_period }}</td>
+                </tr>
+              </table>
+            </div>
+            <div class="res-section" v-if="(lastResult.evidence_list || []).length">
+              <div class="res-label">证据列表</div>
+              <div v-for="(e, i) in lastResult.evidence_list" :key="i" class="res-evidence">
+                <el-tag size="small" type="info">{{ e.source_type }}</el-tag>
+                {{ e.evidence_text }}
+                <span class="conf">置信度 {{ e.confidence }}</span>
+              </div>
+            </div>
+            <div class="res-section">
+              <div class="res-label">归因结论</div>
+              <div class="res-text">{{ lastResult.conclusion_text }}</div>
+            </div>
+            <div class="res-section" v-if="lastResult.missing_data_text">
+              <div class="res-label">待补充数据</div>
+              <div class="res-text">{{ lastResult.missing_data_text }}</div>
+            </div>
+            <div class="res-section" v-if="actions.length">
+              <div class="res-label">下一步建议</div>
+              <ol class="res-actions-list"><li v-for="(a, i) in actions" :key="i">{{ a }}</li></ol>
+            </div>
+            <div class="res-actions">
+              <el-button size="small" @click="copyResult">复制</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="!lastResult.result_file_path"
+                @click="exportResult"
+              >
+                导出下载
+              </el-button>
+            </div>
+          </template>
+          <div v-else class="placeholder-block small">暂无分析结果</div>
         </div>
       </el-aside>
     </el-container>
@@ -188,6 +235,7 @@ import {
   listAttachments,
   uploadAttachment
 } from '../api/attachment'
+import { downloadResultFile, getLatestResult } from '../api/result'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -198,6 +246,30 @@ const draft = ref('')
 const userDisplay = ref('当前用户')
 const attachments = ref([])
 const attachVisible = ref(false)
+const lastResult = ref(null)
+
+// 六部分建议列表：后端存 JSON 字符串或数组，前端统一成数组
+const actions = computed(() => {
+  const v = lastResult.value?.next_action_text
+  if (!v) return []
+  if (Array.isArray(v)) return v
+  try {
+    const parsed = JSON.parse(v)
+    return Array.isArray(parsed) ? parsed : [String(parsed)]
+  } catch {
+    return [String(v)]
+  }
+})
+
+function loadLatestResult() {
+  if (!conv.currentId) {
+    lastResult.value = null
+    return
+  }
+  getLatestResult(conv.currentId)
+    .then((data) => (lastResult.value = data.result))
+    .catch(() => {})
+}
 const uploading = ref(false)
 const uploadPct = ref(0)
 const fileRef = ref(null)
@@ -232,18 +304,38 @@ watch(
     if (id) {
       chat.connect(id)
       refreshAttachments()
+      loadLatestResult()
     } else {
       chat.disconnect()
       attachments.value = []
+      lastResult.value = null
     }
   }
 )
 
-// 一轮结束：刷新历史（含工具事件与结果消息）
+// 一轮结束：刷新历史（含工具事件与结果消息）+ 拉最新结果
 async function onRoundDone(finished) {
   if (finished.error) ElMessage.error(finished.error)
   try {
     if (conv.currentId) await conv.select(conv.currentId)
+    loadLatestResult()
+  } catch (e) {
+    authErr(e)
+  }
+}
+
+async function copyResult() {
+  try {
+    await navigator.clipboard.writeText(lastResult.value?.result_markdown || '')
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.error('复制失败')
+  }
+}
+
+async function exportResult() {
+  try {
+    await downloadResultFile(lastResult.value.task_id)
   } catch (e) {
     authErr(e)
   }
@@ -687,6 +779,61 @@ function fmtDay(t) {
 
 .cancel-btn {
   width: 100%;
+}
+
+.res-section {
+  margin-bottom: 10px;
+}
+
+.res-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+
+.res-text {
+  font-size: 13px;
+  color: #303133;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.res-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.res-table th,
+.res-table td {
+  border: 1px solid #ebeef5;
+  padding: 3px 6px;
+  text-align: left;
+  color: #303133;
+}
+
+.res-evidence {
+  font-size: 12px;
+  color: #303133;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.res-evidence .conf {
+  color: #c0c4cc;
+}
+
+.res-actions-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #303133;
+}
+
+.res-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .attach-upload {

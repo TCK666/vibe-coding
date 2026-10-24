@@ -14,27 +14,19 @@ from sqlalchemy import select, update
 from ..core.errors import BizError
 from ..db.session import SessionLocal
 from ..llm import DeltaText, Finish, ToolCall, get_llm_client
-from ..models import AnalysisResult, AnalysisTask, Conversation, Message, TaskLog
-from . import message_service, tool_exec
+from ..models import AnalysisResult, AnalysisTask, Message, TaskLog
+from ..schemas.result import render_markdown, validate_six_part
+from . import message_service, result_service, tool_exec
+from .context_builder import build_context
 from .ws_manager import ws_manager
 
 MAX_TOOL_ROUNDS = 8
-HISTORY_LIMIT = 20
 FORCE_CANCEL_AFTER = 5.0  # 协作取消未生效的兜底秒数
 
 
 class TaskCancelled(Exception):
     """协作式取消：由引擎在安全点主动抛出，避免 CancelledError 落在 DB 操作中间。"""
 
-
-SYSTEM_PROMPT = (
-    "你是经营归因分析助手。围绕用户的业务问题进行分析：需要数据时调用 db_query 工具查询业务表，"
-    "基于证据给出归因结论。最终回答必须包含一个 ```json 代码块，字段为：\n"
-    "problem_definition(问题定义), key_metrics(数组,每项含 metric_name/metric_value/metric_unit/metric_period), "
-    "evidence_list(数组,每项含 source_type/source_name/evidence_text/related_metric/confidence), "
-    "conclusion_text(归因结论), missing_data_text(待补充数据), next_action_text(下一步建议,至少2条)。\n"
-    "JSON 之外用简洁的 markdown 说明归因过程。"
-)
 
 # 供测试注入的 LLM 工厂；生产即 get_llm_client
 _llm_factory = get_llm_client
@@ -140,25 +132,6 @@ async def _add_log(task_id: int, level: str, log_type: str, content: str) -> Non
         await db.commit()
 
 
-async def _build_context(conversation_id: int) -> list[dict]:
-    """里程碑5简版上下文：system + 最近 HISTORY_LIMIT 条 user/assistant 消息。"""
-    async with SessionLocal() as db:
-        rows = (
-            await db.execute(
-                select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .order_by(Message.seq_no.desc())
-                .limit(HISTORY_LIMIT)
-            )
-        ).scalars().all()
-    history = [
-        {"role": m.role, "content": m.content or ""}
-        for m in reversed(rows)
-        if m.role in ("user", "assistant") and m.message_type in ("text", "result")
-    ]
-    return [{"role": "system", "content": SYSTEM_PROMPT}] + history
-
-
 async def _stream_round(
     conversation_id: int, task_id: int, messages: list[dict], tools: list[dict] | None
 ) -> tuple[str, list[dict], str]:
@@ -203,27 +176,67 @@ def _extract_six_part(final_text: str) -> dict:
         return {}
 
 
-async def _persist_result(task_id: int, conversation_id: int, final_text: str) -> int:
+async def _build_context(conversation_id: int, llm) -> tuple[list[dict], tool_exec.ToolContext]:
+    """委托 context_builder（含摘要压缩与附件文本）。"""
+    return await build_context(conversation_id, llm)
+
+
+async def _persist_result(
+    task_id: int, conversation_id: int, user_id: int, final_text: str
+) -> tuple[int, str]:
+    """解析六部分 JSON → 强校验 → 渲染 markdown → 写导出文件。返回 (result_id, 状态)。"""
     parsed = _extract_six_part(final_text)
-    next_action = parsed.get("next_action_text")
-    if isinstance(next_action, list):
-        next_action = json.dumps(next_action, ensure_ascii=False)
+    status = "success"
+    problem = parsed.get("problem_definition")
+    try:
+        six = validate_six_part(parsed)
+        markdown = render_markdown(six)
+        problem = six.problem_definition
+        next_action = json.dumps(six.next_action_text, ensure_ascii=False)
+        key_metrics = [m.model_dump() for m in six.key_metrics]
+        evidence = [e.model_dump() for e in six.evidence_list]
+        conclusion = six.conclusion_text
+        missing = six.missing_data_text
+    except Exception as e:  # 校验失败：原始文本入库，保证结果可见
+        status = f"validation_failed: {e}"
+        markdown = final_text
+        next_action = (
+            json.dumps(parsed.get("next_action_text"), ensure_ascii=False)
+            if isinstance(parsed.get("next_action_text"), list)
+            else parsed.get("next_action_text")
+        )
+        key_metrics = parsed.get("key_metrics")
+        evidence = parsed.get("evidence_list")
+        conclusion = parsed.get("conclusion_text")
+        missing = parsed.get("missing_data_text")
+
     async with SessionLocal() as db:
         result = AnalysisResult(
             task_id=task_id,
             conversation_id=conversation_id,
-            problem_definition=parsed.get("problem_definition"),
-            key_metrics_json=parsed.get("key_metrics"),
-            evidence_list_json=parsed.get("evidence_list"),
-            conclusion_text=parsed.get("conclusion_text"),
-            missing_data_text=parsed.get("missing_data_text"),
+            problem_definition=problem or "(未解析出结构化结果，详见 result_markdown)",
+            key_metrics_json=key_metrics,
+            evidence_list_json=evidence,
+            conclusion_text=conclusion,
+            missing_data_text=missing,
             next_action_text=next_action,
-            result_markdown=final_text,
+            result_markdown=markdown,
         )
         db.add(result)
         await db.commit()
         await db.refresh(result)
-        return result.id
+        result_id = result.id
+
+    if status == "success":
+        rel = result_service.export_result(user_id, conversation_id, task_id, markdown)
+        async with SessionLocal() as db:
+            await db.execute(
+                update(AnalysisResult)
+                .where(AnalysisResult.id == result_id)
+                .values(result_file_path=rel)
+            )
+            await db.commit()
+    return result_id, status
 
 
 async def run_task(task_id: int, conversation_id: int, user_id: int, content: str) -> None:
@@ -244,7 +257,7 @@ async def run_task(task_id: int, conversation_id: int, user_id: int, content: st
                 db, conversation_id, role="user", content=content
             )
         _check_cancel(task_id)
-        messages = await _build_context(conversation_id)
+        messages, tool_ctx = await _build_context(conversation_id, _llm_factory())
         tools = tool_exec.TOOL_SCHEMAS
 
         for round_no in range(MAX_TOOL_ROUNDS):
@@ -272,7 +285,9 @@ async def run_task(task_id: int, conversation_id: int, user_id: int, content: st
                     {"task_id": task_id, "tool_name": c["name"]},
                 )
                 try:
-                    summary, full_output = await tool_exec.execute_tool(c["name"], c["arguments"])
+                    summary, full_output = await tool_exec.execute_tool(
+                        c["name"], c["arguments"], tool_ctx
+                    )
                     tool_status = "success"
                 except Exception as e:  # 工具失败把错误作为结果回传 LLM，继续对话
                     summary, full_output, tool_status = f"工具执行失败: {e}", f"error: {e}", "failed"
@@ -293,7 +308,11 @@ async def run_task(task_id: int, conversation_id: int, user_id: int, content: st
             final_text = final_text + "\n\n(已达工具调用轮次上限，基于现有证据给出结论)"
 
         _check_cancel(task_id)
-        result_id = await _persist_result(task_id, conversation_id, final_text)
+        result_id, result_status = await _persist_result(
+            task_id, conversation_id, user_id, final_text
+        )
+        if result_status != "success":
+            await _add_log(task_id, "WARNING", "result_validation", result_status)
         async with SessionLocal() as db:
             await message_service.append_message(
                 db, conversation_id, role="assistant", message_type="result", content=final_text

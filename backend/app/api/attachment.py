@@ -22,11 +22,18 @@ async def upload_attachment(
 ):
     await conversation_service.get_owned_conversation(db, conversation_id, user.id)
     att = await attachment_service.save_upload(db, conversation_id, user.id, file)
+    if await attachment_service.parse_and_store(att, user.id):
+        att.parse_status = "success"
+    else:
+        att.parse_status = "failed"
+    await db.commit()
+    await db.refresh(att)
     return ok(
         {
             "attachment_id": att.id,
             "file_name": att.file_name,
             "file_path": att.file_path,
+            "parse_status": att.parse_status,
         }
     )
 
